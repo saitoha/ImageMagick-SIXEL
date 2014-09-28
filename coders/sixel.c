@@ -41,11 +41,37 @@
   Include declarations.
 */
 #include "magick/studio.h"
+#include "magick/attribute.h"
+#include "magick/blob.h"
 #include "magick/blob-private.h"
+#include "magick/cache.h"
+#include "magick/color.h"
+#include "magick/color-private.h"
+#include "magick/colormap.h"
+#include "magick/colorspace.h"
 #include "magick/colorspace-private.h"
+#include "magick/exception.h"
 #include "magick/exception-private.h"
+#include "magick/geometry.h"
+#include "magick/image.h"
+#include "magick/image-private.h"
+#include "magick/list.h"
+#include "magick/magick.h"
+#include "magick/memory_.h"
+#include "magick/monitor.h"
+#include "magick/monitor-private.h"
+#include "magick/pixel-accessor.h"
 #include "magick/pixel-private.h"
+#include "magick/quantize.h"
+#include "magick/quantum-private.h"
+#include "magick/resize.h"
+#include "magick/resource_.h"
+#include "magick/splay-tree.h"
+#include "magick/static.h"
+#include "magick/string_.h"
 #include "magick/module.h"
+#include "magick/threshold.h"
+#include "magick/utility.h"
 
 #define RGB(r, g, b) (((r) << 16) + ((g) << 8) +  (b))
 #define RGBA(r, g, b, a) (((a) << 24) + ((r) << 16) + ((g) << 8) +  (b))
@@ -163,10 +189,10 @@ get_params(unsigned char *p, int *param, int *len)
 int
 sixel_decode(unsigned char              /* in */  *p,         /* sixel bytes */
              unsigned char              /* out */ **pixels,   /* decoded pixels */
-             int                        /* out */ *pwidth,    /* image width */
-             int                        /* out */ *pheight,   /* image height */
+             size_t                     /* out */ *pwidth,    /* image width */
+             size_t                     /* out */ *pheight,   /* image height */
              unsigned char              /* out */ **palette,  /* ARGB palette */
-             int                        /* out */ *ncolors    /* palette size (<= 256) */)
+             unsigned long              /* out */ *ncolors    /* palette size (<= 256) */)
 {
     int n, i, r, g, b, sixel_vertical_mask, c;
     int posision_x, posision_y;
@@ -540,7 +566,7 @@ typedef struct sixel_output {
 
 int sixel_write(char *data, int size, void *priv)
 {
-    (void) WriteBlob((Image *)priv,size,data);
+    return WriteBlob((Image *)priv,size,(unsigned char*)data);
 }
 
 sixel_output_t * const
@@ -580,8 +606,6 @@ static int
 sixel_put_flash(sixel_output_t *const context)
 {
     int n;
-    int ret;
-    char buf[256];
     int nwrite;
 
 #if defined(USE_VT240)        /* VT240 Max 255 ? */
@@ -700,12 +724,10 @@ sixel_encode_impl(unsigned char *pixels, int width, int height,
 {
     int x, y, i, n, c;
     int sx, mx;
-    int len, pix, skip;
-    int ret;
+    int len, pix;
     unsigned char *map;
     sixel_node_t *np, *tp, top;
     unsigned char list[SIXEL_PALETTE_MAX];
-    char buf[256];
     int nwrite;
 
     context->pos = 0;
@@ -961,21 +983,16 @@ static MagickBooleanType IsSIXEL(const unsigned char *magick,const size_t length
 static Image *ReadSIXELImage(const ImageInfo *image_info,ExceptionInfo *exception)
 {
   char
-    key[MaxTextExtent],
-    target[MaxTextExtent],
     *sixel_buffer;
 
   Image
     *image;
 
   MagickBooleanType
-    active,
     status;
 
   register char
-    *p,
-    *q,
-    *next;
+    *p;
 
   register IndexPacket
     *indexes;
@@ -989,23 +1006,12 @@ static Image *ReadSIXELImage(const ImageInfo *image_info,ExceptionInfo *exceptio
   size_t
     length;
 
-  SplayTreeInfo
-    *sixel_colors;
-
   ssize_t
-    count,
     i,
     j,
     y;
 
-  unsigned long
-    colors,
-    columns,
-    rows,
-    width;
-
   unsigned char *sixel_pixels, *sixel_palette;
-  int sixel_width, sixel_height, sixel_ncolrs;
 
   /*
     Open image file.
@@ -1053,7 +1059,7 @@ static Image *ReadSIXELImage(const ImageInfo *image_info,ExceptionInfo *exceptio
   /*
     Decode SIXEL
   */
-  if (sixel_decode(sixel_buffer, &sixel_pixels, &image->columns, &image->rows, &sixel_palette, &image->colors) != 0)
+  if (sixel_decode((unsigned char *)sixel_buffer, &sixel_pixels, &image->columns, &image->rows, &sixel_palette, &image->colors) != 0)
     ThrowReaderException(CorruptImageError,"CorruptImage");
   image->depth=24;
   image->storage_class=PseudoClass;
@@ -1083,7 +1089,6 @@ static Image *ReadSIXELImage(const ImageInfo *image_info,ExceptionInfo *exceptio
           j=(ssize_t) sixel_pixels[y * image->columns + x];
           SetPixelIndex(indexes+x,j);
           r++;
-          p+=width;
         }
         if (SyncAuthenticPixels(image,exception) == MagickFalse)
           break;
@@ -1191,20 +1196,11 @@ ModuleExport void UnregisterSIXELImage(void)
 */
 static MagickBooleanType WriteSIXELImage(const ImageInfo *image_info,Image *image)
 {
-  char
-    buffer[MaxTextExtent],
-    basename[MaxTextExtent],
-    name[MaxTextExtent],
-    symbol[MaxTextExtent];
-
   ExceptionInfo
     *exception;
 
   MagickBooleanType
     status;
-
-  MagickPixelPacket
-    pixel;
 
   register const IndexPacket
     *indexes;
@@ -1217,8 +1213,6 @@ static MagickBooleanType WriteSIXELImage(const ImageInfo *image_info,Image *imag
     x;
 
   ssize_t
-    j,
-    k,
     opacity,
     y;
 
