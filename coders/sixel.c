@@ -74,7 +74,6 @@
 #include "magick/utility.h"
 
 #define RGB(r, g, b) (((r) << 16) + ((g) << 8) +  (b))
-#define RGBA(r, g, b, a) (((a) << 24) + ((r) << 16) + ((g) << 8) +  (b))
 #define PALVAL(n,a,m) (((n) * (a) + ((m) / 2)) / (m))
 #define XRGB(r,g,b) RGB(PALVAL(r, 255, 100), PALVAL(g, 255, 100), PALVAL(b, 255, 100))
 #define SIXEL_PALETTE_MAX 256
@@ -522,33 +521,19 @@ sixel_decode(unsigned char              /* in */  *p,         /* sixel bytes */
 
 typedef struct sixel_node {
     struct sixel_node *next;
-    int pal;
-    int sx;
-    int mx;
+    int color;
+    int left;
+    int right;
     unsigned char *map;
 } sixel_node_t;
 
-typedef int (* sixel_write_function)(char *data, int size, void *priv);
-
 typedef struct sixel_output {
-
-    int ref;
 
     /* compatiblity flags */
 
     /* 0: 7bit terminal,
      * 1: 8bit terminal */
     unsigned char has_8bit_control;
-
-    /* 0: the terminal has sixel scrolling
-     * 1: the terminal does not have sixel scrolling */
-    unsigned char has_sixel_scrolling;
-
-    /* 0: DECSDM set (CSI ? 80 h) enables sixel scrolling
-       1: DECSDM set (CSI ? 80 h) disables sixel scrolling */
-    unsigned char has_sdm_glitch;
-
-    sixel_write_function fn_write;
 
     unsigned char conv_palette[256];
     int save_pixel;
@@ -558,33 +543,25 @@ typedef struct sixel_output {
     sixel_node_t *node_top;
     sixel_node_t *node_free;
 
-    void *priv;
+    void *image;
     int pos;
     unsigned char buffer[1];
 
 } sixel_output_t;
 
-int sixel_write(char *data, int size, void *priv)
-{
-    return WriteBlob((Image *)priv,size,(unsigned char*)data);
-}
-
 sixel_output_t * const
-sixel_output_create(sixel_write_function fn_write, void *priv)
+sixel_output_create(Image *image)
 {
     sixel_output_t *output;
 
     output = AcquireQuantumMemory(sizeof(sixel_output_t) + SIXEL_OUTPUT_PACKET_SIZE * 2, 1);
-    output->ref = 1;
     output->has_8bit_control = 0;
-    output->has_sdm_glitch = 0;
-    output->fn_write = fn_write;
     output->save_pixel = 0;
     output->save_count = 0;
     output->active_palette = (-1);
     output->node_top = NULL;
     output->node_free = NULL;
-    output->priv = priv;
+    output->image = image;
     output->pos = 0;
 
     return output;
@@ -594,7 +571,7 @@ static void
 sixel_advance(sixel_output_t *context, int nwrite)
 {
     if ((context->pos += nwrite) >= SIXEL_OUTPUT_PACKET_SIZE) {
-        context->fn_write((char *)context->buffer, SIXEL_OUTPUT_PACKET_SIZE, context->priv);
+        WriteBlob(context->image,SIXEL_OUTPUT_PACKET_SIZE,context->buffer);
         memcpy(context->buffer,
                context->buffer + SIXEL_OUTPUT_PACKET_SIZE,
                (context->pos -= SIXEL_OUTPUT_PACKET_SIZE));
@@ -685,30 +662,26 @@ sixel_node_del(sixel_output_t *const context, sixel_node_t *np)
 
 static int
 sixel_put_node(sixel_output_t *const context, int x,
-        sixel_node_t *np, int ncolors, int keycolor)
+               sixel_node_t *np, int ncolors, int keycolor)
 {
     int nwrite;
 
     if (ncolors != 2 || keycolor == -1) {
         /* designate palette index */
-        if (context->active_palette != np->pal) {
+        if (context->active_palette != np->color) {
             nwrite = sprintf((char *)context->buffer + context->pos,
-                             "#%d", context->conv_palette[np->pal]);
+                             "#%d", context->conv_palette[np->color]);
             sixel_advance(context, nwrite);
-            context->active_palette = np->pal;
+            context->active_palette = np->color;
         }
     }
 
-    for (; x < np->sx; x++) {
-        if (x != keycolor) {
-            sixel_put_pixel(context, 0);
-        }
+    for (; x < np->left; x++) {
+        sixel_put_pixel(context, 0);
     }
 
-    for (; x < np->mx; x++) {
-        if (x != keycolor) {
-            sixel_put_pixel(context, np->map[x]);
-        }
+    for (; x < np->right; x++) {
+        sixel_put_pixel(context, np->map[x]);
     }
 
     sixel_put_flash(context);
@@ -723,11 +696,10 @@ sixel_encode_impl(unsigned char *pixels, int width, int height,
                   sixel_output_t *context)
 {
     int x, y, i, n, c;
-    int sx, mx;
+    int left, right;
     int len, pix;
     unsigned char *map;
     sixel_node_t *np, *tp, top;
-    unsigned char list[SIXEL_PALETTE_MAX];
     int nwrite;
 
     context->pos = 0;
@@ -743,7 +715,7 @@ sixel_encode_impl(unsigned char *pixels, int width, int height,
     }
     memset(map, 0, len);
     for (n = 0; n < ncolors; n++) {
-        context->conv_palette[n] = list[n] = n;
+        context->conv_palette[n] = n;
     }
 
     if (context->has_8bit_control) {
@@ -792,26 +764,26 @@ sixel_encode_impl(unsigned char *pixels, int width, int height,
         }
 
         for (c = 0; c < ncolors; c++) {
-            for (sx = 0; sx < width; sx++) {
-                if (*(map + c * width + sx) == 0) {
+            for (left = 0; left < width; left++) {
+                if (*(map + c * width + left) == 0) {
                     continue;
                 }
 
-                for (mx = sx + 1; mx < width; mx++) {
-                    if (*(map + c * width + mx) != 0) {
+                for (right = left + 1; right < width; right++) {
+                    if (*(map + c * width + right) != 0) {
                         continue;
                     }
 
-                    for (n = 1; (mx + n) < width; n++) {
-                        if (*(map + c * width + mx + n) != 0) {
+                    for (n = 1; (right + n) < width; n++) {
+                        if (*(map + c * width + right + n) != 0) {
                             break;
                         }
                     }
 
-                    if (n >= 10 || (mx + n) >= width) {
+                    if (n >= 10 || right + n >= width) {
                         break;
                     }
-                    mx = mx + n - 1;
+                    right = right + n - 1;
                 }
 
                 if ((np = context->node_free) != NULL) {
@@ -820,18 +792,19 @@ sixel_encode_impl(unsigned char *pixels, int width, int height,
                     return (-1);
                 }
 
-                np->pal = c;
-                np->sx = sx;
-                np->mx = mx;
+                np->color = c;
+                np->left = left;
+                np->right = right;
                 np->map = map + c * width;
 
                 top.next = context->node_top;
                 tp = &top;
 
                 while (tp->next != NULL) {
-                    if (np->sx < tp->next->sx) {
+                    if (np->left < tp->next->left) {
                         break;
-                    } else if (np->sx == tp->next->sx && np->mx > tp->next->mx) {
+                    }
+                    if (np->left == tp->next->left && np->right > tp->next->right) {
                         break;
                     }
                     tp = tp->next;
@@ -841,13 +814,13 @@ sixel_encode_impl(unsigned char *pixels, int width, int height,
                 tp->next = np;
                 context->node_top = top.next;
 
-                sx = mx - 1;
+                left = right - 1;
             }
 
         }
 
         for (x = 0; (np = context->node_top) != NULL;) {
-            if (x > np->sx) {
+            if (x > np->left) {
                 /* DECGCR Graphics Carriage Return */
                 context->buffer[context->pos] = '$';
                 sixel_advance(context, 1);
@@ -859,7 +832,7 @@ sixel_encode_impl(unsigned char *pixels, int width, int height,
             np = context->node_top;
 
             while (np != NULL) {
-                if (np->sx < x) {
+                if (np->left < x) {
                     np = np->next;
                     continue;
                 }
@@ -895,7 +868,7 @@ sixel_encode_impl(unsigned char *pixels, int width, int height,
 
     /* flush buffer */
     if (context->pos > 0) {
-        context->fn_write((char *)context->buffer, context->pos, context->priv);
+        WriteBlob(context->image,context->pos,context->buffer);
     }
 
     /* free nodes */
@@ -1221,9 +1194,6 @@ static MagickBooleanType WriteSIXELImage(const ImageInfo *image_info,Image *imag
   register const IndexPacket
     *indexes;
 
-  register const PixelPacket
-    *p;
-
   register ssize_t
     i,
     x;
@@ -1328,9 +1298,9 @@ static MagickBooleanType WriteSIXELImage(const ImageInfo *image_info,Image *imag
   /*
     Define SIXEL pixels.
   */
-  output = sixel_output_create(sixel_write, (void *)image);
+  output = sixel_output_create(image);
   sixel_pixels =(unsigned char *) AcquireQuantumMemory((size_t) image->columns * image->rows,1);
-  p=GetVirtualPixels(image,0,0,image->columns,image->rows,exception);
+  (void) GetVirtualPixels(image,0,0,image->columns,image->rows,exception);
   indexes=GetVirtualIndexQueue(image);
   for (y=0; y < (ssize_t) image->rows; y++)
     for (x=0; x < (ssize_t) image->columns; x++)
