@@ -106,7 +106,6 @@ typedef struct sixel_output {
      * 1: 8bit terminal */
     unsigned char has_8bit_control;
 
-    unsigned char conv_palette[256];
     int save_pixel;
     int save_count;
     int active_palette;
@@ -553,7 +552,7 @@ MagickBooleanType sixel_decode(unsigned char              /* in */  *p,         
     *pheight = imsy;
     *ncolors = max_color_index + 1;
     *palette = (unsigned char *) AcquireQuantumMemory(*ncolors,4);
-    for (n = 0; n < (ssize_t) *ncolors; ++n) {
+    for (n = 0; n < *ncolors; ++n) {
         (*palette)[n * 4 + 0] = sixel_palet[n] >> 16 & 0xff;
         (*palette)[n * 4 + 1] = sixel_palet[n] >> 8 & 0xff;
         (*palette)[n * 4 + 2] = sixel_palet[n] & 0xff;
@@ -673,7 +672,7 @@ static int sixel_put_node(sixel_output_t *const context, int x,
         /* designate palette index */
         if (context->active_palette != np->color) {
             nwrite = sprintf((char *)context->buffer + context->pos,
-                             "#%d", context->conv_palette[np->color]);
+                             "#%d", np->color);
             sixel_advance(context, nwrite);
             context->active_palette = np->color;
         }
@@ -709,6 +708,7 @@ static MagickBooleanType sixel_encode_impl(unsigned char *pixels, int width,int 
     unsigned char *map;
     sixel_node_t *np, *tp, top;
     int nwrite;
+    const int sixel_node_sparsity = 10;
 
     context->pos = 0;
 
@@ -722,9 +722,6 @@ static MagickBooleanType sixel_encode_impl(unsigned char *pixels, int width,int 
         return (MagickFalse);
     }
     (void) ResetMagickMemory(map, 0, len);
-    for (n = 0; n < ncolors; n++) {
-        context->conv_palette[n] = n;
-    }
 
     if (context->has_8bit_control) {
         nwrite = sprintf((char *)context->buffer, "\x90" "0;0;0" "q");
@@ -746,7 +743,7 @@ static MagickBooleanType sixel_encode_impl(unsigned char *pixels, int width,int 
         for (n = 0; n < ncolors; n++) {
             /* DECGCI Graphics Color Introducer  # Pc ; Pu; Px; Py; Pz */
             nwrite = sprintf((char *)context->buffer + context->pos, "#%d;2;%d;%d;%d",
-                             context->conv_palette[n],
+                             n,
                              (palette[n * 3 + 0] * 100 + 127) / 255,
                              (palette[n * 3 + 1] * 100 + 127) / 255,
                              (palette[n * 3 + 2] * 100 + 127) / 255);
@@ -773,7 +770,6 @@ static MagickBooleanType sixel_encode_impl(unsigned char *pixels, int width,int 
         if (++i < 6 && (y + 1) < height) {
             continue;
         }
-
         for (c = 0; c < ncolors; c++) {
             for (left = 0; left < width; left++) {
                 if (*(map + c * width + left) == 0) {
@@ -791,7 +787,7 @@ static MagickBooleanType sixel_encode_impl(unsigned char *pixels, int width,int 
                         }
                     }
 
-                    if (n >= 10 || right + n >= width) {
+                    if (n >= sixel_node_sparsity || right + n >= width) {
                         break;
                     }
                     right = right + n - 1;
@@ -1057,11 +1053,12 @@ static Image *ReadSIXELImage(const ImageInfo *image_info,ExceptionInfo *exceptio
       sixel_palette=(unsigned char *) RelinquishMagickMemory(sixel_palette);
       ThrowReaderException(ResourceLimitError,"MemoryAllocationFailed");
     }
-  for (i = 0; i < (ssize_t) image->colors; ++i) {
-    image->colormap[i].red   = ScaleCharToQuantum(sixel_palette[i * 4 + 0]);
-    image->colormap[i].green = ScaleCharToQuantum(sixel_palette[i * 4 + 1]);
-    image->colormap[i].blue  = ScaleCharToQuantum(sixel_palette[i * 4 + 2]);
-  }
+  for (i = 0; i < image->colors; ++i)
+    {
+      image->colormap[i].red   = ScaleCharToQuantum(sixel_palette[i * 4 + 0]);
+      image->colormap[i].green = ScaleCharToQuantum(sixel_palette[i * 4 + 1]);
+      image->colormap[i].blue  = ScaleCharToQuantum(sixel_palette[i * 4 + 2]);
+    }
 
   j=0;
   if (image_info->ping == MagickFalse)
